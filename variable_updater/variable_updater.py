@@ -5,6 +5,8 @@ import sys
 import argparse
 import yaml
 import hvac
+import boto3
+import re
 
 from variable_updater.bitbucket.variable import Variable
 from variable_updater.bitbucket.requester import Requester
@@ -28,7 +30,7 @@ def parse_args():
     parser.add_argument(
         "-p", "--vault-key-password", help="vault key to read bitbucket password from"
     )
-    parser.add_argument("-c", "--config", help="config file")
+    parser.add_argument("-c", "--config", help="config file or s3 object url")
 
     args = parser.parse_args()
 
@@ -88,6 +90,27 @@ class Vault:
             print(f"error: could not read key '{key}': {error}")
             sys.exit(1)
 
+def pull_config(s3_key):
+
+    local_path = "/tmp/config.yml"
+
+    regexp = re.compile(r"(https:\/\/)(s3-|s3\.)?(.*)\.amazonaws\.com")
+
+    if regexp.search(s3_key):
+        s3_bucket = s3_key.split(".")[0].replace("https://","")
+        s3_object_key = s3_key.split("/")[3]
+    else:
+
+        s3_bucket = s3_key.split("/")[1]
+        s3_object_key = s3_key.split(s3_bucket + "/")[1]
+
+    try:
+        s3_client = boto3.client("s3")
+        s3_client.download_file(s3_bucket, s3_object_key, local_path)
+        return local_path
+    except Exception as e:
+        print(f"error: could not get s3 object. bucket: '{s3_bucket}' - object: '{s3_object_key}'")
+        sys.exit(1)
 
 def main():
     args = parse_args()
@@ -111,6 +134,10 @@ def main():
 
     # NOTE: generate an "app password" with edit variables permissions
     requester = Requester(username=bitbucket_username, password=bitbucket_password,)
+
+    regexp = re.compile(r"(s3-|s3\.)?(.*)\.amazonaws\.com")
+    if regexp.search(args.config):
+        args.config = pull_config(args.config)
 
     for variable in variables(args.config):
         value = vault.read("/secret", variable["value"])
